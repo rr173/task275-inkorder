@@ -1,0 +1,5 @@
+# 出题元数据与运行时产物不入库
+.private/
+*.db
+*.db-shm
+*.db-wal
