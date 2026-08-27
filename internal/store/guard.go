@@ -24,15 +24,27 @@ func (g *WriteGuard) WithTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	_ = ctx
+	// 入口先查一次：ctx 已取消则不再进入临界区，
+	// 避免研究者已取消的操作仍然占用写锁并落库。
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	// 抢到锁后再查一次：等锁期间可能被取消，此时不应再 Begin。
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	tx, err := g.DB.Begin()
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	if err := fn(tx); err != nil {
+		return err
+	}
+	// 提交前再查一次：长事务期间若研究者取消，则回滚而非落库。
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

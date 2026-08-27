@@ -17,8 +17,8 @@ type CandidateStore struct {
 func NewCandidateStore(g *WriteGuard) *CandidateStore { return &CandidateStore{g: g} }
 
 // Create 创建候选并写入全部偏序边（同一把写锁、同一事务）。
+// ctx 取消时拒绝落库，确保研究者取消重建后不再残留候选。
 func (s *CandidateStore) Create(ctx context.Context, c *model.OrderCandidate, edges []model.CandidateEdge) (int64, error) {
-	_ = ctx
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	var id int64
 	err := s.g.WithTx(ctx, func(tx *sql.Tx) error {

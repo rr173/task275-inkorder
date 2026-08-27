@@ -142,3 +142,78 @@ func TestBatchTransitionGuards(t *testing.T) {
 		t.Error("rebuild without fragments should fail")
 	}
 }
+
+// TestRebuildCandidateRespectsCancel 验证研究者取消重建后不再落库候选。
+// 回归点：RebuildCandidate 曾忽略 ctx 并丢弃到 context.Background()，
+// 导致即便客户端断开，候选仍被生成并保存。
+func TestRebuildCandidateRespectsCancel(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	app := NewApp(db)
+
+	ctx := context.Background()
+	batchSvc := NewBatchService(app)
+	fragSvc := NewFragmentService(app)
+	orderSvc := NewOrderService(app)
+
+	b, err := batchSvc.Create("CASE-C", "取消重建回归", "")
+	if err != nil {
+		t.Fatalf("create batch: %v", err)
+	}
+	l1, err := fragSvc.AddLayer(b.ID, "L1", "a.tif", 1000, 800, true)
+	if err != nil {
+		t.Fatalf("add layer1: %v", err)
+	}
+	f1, err := fragSvc.AddFragment(b.ID, l1.ID, "A", 100, 100, 300, 100, 0.3)
+	if err != nil {
+		t.Fatalf("add A: %v", err)
+	}
+	f2, err := fragSvc.AddFragment(b.ID, l1.ID, "B", 200, 40, 200, 200, 0.62)
+	if err != nil {
+		t.Fatalf("add B: %v", err)
+	}
+	if _, err := fragSvc.CalibrateBatch(b.ID); err != nil {
+		t.Fatalf("calibrate: %v", err)
+	}
+	if _, err := orderSvc.AddCrossing(ctx, b.ID, l1.ID, f1.ID, f2.ID, 200, 100, 0.85, "B covers A"); err != nil {
+		t.Fatalf("add crossing: %v", err)
+	}
+	if _, err := batchSvc.Rebuild(ctx, b.ID); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+
+	// 研究者在重建落库前取消：预取消的 ctx 应使候选不被生成。
+	cancelCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := orderSvc.RebuildCandidate(cancelCtx, b.ID); err == nil {
+		t.Fatal("expected rebuild candidate to fail on cancelled context")
+	}
+
+	// 取消重建后不应有任何候选残留落库。
+	cs, err := app.Candidates.ListByBatch(b.ID)
+	if err != nil {
+		t.Fatalf("list candidates: %v", err)
+	}
+	if len(cs) != 0 {
+		t.Fatalf("expected no candidate persisted after cancel, got %d", len(cs))
+	}
+
+	// 对照：正常 ctx 仍能重建并落库候选，证明取消逻辑未误伤正常路径。
+	cand, err := orderSvc.RebuildCandidate(ctx, b.ID)
+	if err != nil {
+		t.Fatalf("rebuild candidate (normal): %v", err)
+	}
+	if cand.Status != model.CandConsistent {
+		t.Fatalf("candidate status = %s (%s)", cand.Status, cand.ConflictReason)
+	}
+	cs2, err := app.Candidates.ListByBatch(b.ID)
+	if err != nil {
+		t.Fatalf("list candidates after normal rebuild: %v", err)
+	}
+	if len(cs2) != 1 {
+		t.Fatalf("expected 1 candidate after normal rebuild, got %d", len(cs2))
+	}
+}

@@ -96,8 +96,11 @@ func (s *OrderService) AutoCross(ctx context.Context, batchID, layerID, firstID,
 
 // RebuildCandidate 重建批次笔顺候选。
 // 从全部活跃片段 + 非伪影交叉证据 + 观测点构建偏序图，输出候选。
+// ctx 取消时立即终止重建，不再生成或保存候选（避免研究者已取消重建却仍落库候选）。
 func (s *OrderService) RebuildCandidate(ctx context.Context, batchID int64) (*model.OrderCandidate, error) {
-	_ = ctx
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	b, err := s.app.Batches.Get(batchID)
 	if err != nil {
 		return nil, fmt.Errorf("load batch for rebuild: %w", err)
@@ -117,12 +120,22 @@ func (s *OrderService) RebuildCandidate(ctx context.Context, batchID int64) (*mo
 	if err != nil {
 		return nil, fmt.Errorf("list observations for rebuild: %w", err)
 	}
+	// 加载完证据后再次确认未被取消：重建本身是 CPU/IO 重活，
+	// 研究者可能在数据加载阶段就取消了重建。
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	obsEdges := pauseToEdges(obs, fs)
 	res := (order.Builder{}).Build(fs, cs, obs)
 	allEdges := append([]model.CandidateEdge{}, res.Edges...)
 	allEdges = append(allEdges, obsEdges...)
 
+	// 落库前最后确认未被取消：一旦取消就绝不再写入候选，
+	// 否则会出现“研究者已取消重建，系统却仍生成并保存候选”的问题。
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	status := model.CandConsistent
 	conflictReason := ""
 	if res.HasCycle {

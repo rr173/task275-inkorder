@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"net/http"
 
 	"task275-inkorder/internal/model"
@@ -97,7 +96,7 @@ func (h *CandidateHandler) Rebuild(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	c, err := h.svc.RebuildCandidate(context.Background(), id)
+	c, err := h.svc.RebuildCandidate(r.Context(), id)
 	if err != nil {
 		writeError(w, err)
 		return
