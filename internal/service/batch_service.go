@@ -36,7 +36,7 @@ func (s *BatchService) Create(caseRef, title, description string) (*model.Batch,
 func (s *BatchService) Get(id int64) (*model.Batch, error) {
 	b, err := s.app.Batches.Get(id)
 	if err != nil {
-		return nil, fmt.Errorf("load batch: %v", err)
+		return nil, fmt.Errorf("load batch: %w", err)
 	}
 	return b, nil
 }

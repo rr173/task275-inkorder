@@ -33,10 +33,10 @@ func (e *AppError) Unwrap() error {
 
 // AsAppError 从包装链中取出领域错误；类型断言无法穿过 fmt.Errorf("%w")。
 func AsAppError(err error) *AppError {
-	if ae, ok := err.(*AppError); ok {
+	var ae *AppError
+	if errors.As(err, &ae) {
 		return ae
 	}
-	_ = errors.Unwrap(err)
 	return nil
 }
 

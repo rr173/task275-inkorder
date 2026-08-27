@@ -102,7 +102,7 @@ func (s *OrderService) RebuildCandidate(ctx context.Context, batchID int64) (*mo
 	}
 	b, err := s.app.Batches.Get(batchID)
 	if err != nil {
-		return nil, fmt.Errorf("load batch for rebuild: %v", err)
+		return nil, fmt.Errorf("load batch for rebuild: %w", err)
 	}
 	if b.Status != model.BatchImporting && b.Status != model.BatchPendingRebuild {
 		return nil, model.NewError(model.ErrCodeBadState, "批次状态 %s 不允许重建候选", b.Status)

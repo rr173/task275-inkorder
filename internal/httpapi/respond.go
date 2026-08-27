@@ -33,7 +33,7 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 // writeError 把领域错误映射为 HTTP 响应；未知错误返回 500。
 // 必须走 errors.As / AsAppError，才能识别被 %w 包装的领域错误。
 func writeError(w http.ResponseWriter, err error) {
-	ae, _ := err.(*model.AppError)
+	ae := model.AsAppError(err)
 	if ae != nil {
 		status := statusByCode[ae.Code]
 		if status == 0 {

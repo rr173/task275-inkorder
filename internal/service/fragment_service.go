@@ -47,7 +47,7 @@ func (s *FragmentService) AddFragment(batchID, layerID int64, label string, sx, 
 	}
 	b, err := s.app.Batches.Get(batchID)
 	if err != nil {
-		return nil, fmt.Errorf("load batch for fragment: %v", err)
+		return nil, fmt.Errorf("load batch for fragment: %w", err)
 	}
 	if b.Status != model.BatchImporting {
 		return nil, model.NewError(model.ErrCodeBadState, "批次状态 %s 不允许导入片段", b.Status)
