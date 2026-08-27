@@ -109,10 +109,12 @@ func (s *FragmentStore) UpdateStatus(id int64, status model.FragmentStatus) erro
 	return nil
 }
 
-var fragmentScratch []model.Fragment
-
+// scanFragments 每次返回独立底层数组的切片。
+// 不能复用包级缓冲：多个 ListBy* 结果会被调用方同时持有（如重建笔顺时
+// 先取片段再取交叉），若共享底层数组，后一次查询会覆盖前一次的结果，
+// 表现为片段列表被截短或串到另一批的数据。
 func scanFragments(rows *sql.Rows) ([]model.Fragment, error) {
-	fragmentScratch = fragmentScratch[:0]
+	var out []model.Fragment
 	for rows.Next() {
 		var f model.Fragment
 		var ct timeText
@@ -122,10 +124,10 @@ func scanFragments(rows *sql.Rows) ([]model.Fragment, error) {
 			return nil, err
 		}
 		f.CreatedAt = ct.time()
-		fragmentScratch = append(fragmentScratch, f)
+		out = append(out, f)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return fragmentScratch, nil
+	return out, nil
 }

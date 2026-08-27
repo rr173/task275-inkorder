@@ -97,3 +97,83 @@ func TestCandidateCAS(t *testing.T) {
 		t.Errorf("status = %s", c.Status)
 	}
 }
+
+// TestFragmentListByBatchIndependentAcrossBatches 复现"标伪影后重建笔顺，
+// 列其它批次片段时列表被截短或串到上一批"的缺陷：
+// scanFragments 曾复用包级缓冲，第二次 List 会覆盖第一次仍被持有的切片底层数组。
+func TestFragmentListByBatchIndependentAcrossBatches(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+
+	fs := NewFragmentStore(db)
+	ls := NewLayerStore(db)
+
+	// 批次 A：3 个片段；批次 B：1 个片段（更少，恰好暴露"截短/串数据"）。
+	bA, err := NewBatchStore(db).Create(&model.Batch{CaseRef: "A", Title: "TA"})
+	if err != nil {
+		t.Fatalf("create batch A: %v", err)
+	}
+	lA, err := ls.Create(&model.Layer{BatchID: bA, Name: "LA", Width: 10, Height: 10, IsBase: true})
+	if err != nil {
+		t.Fatalf("create layer A: %v", err)
+	}
+	for i, label := range []string{"A1", "A2", "A3"} {
+		if _, err := fs.Create(&model.Fragment{
+			BatchID: bA, LayerID: lA, Label: label,
+			StartX: float64(i), StartY: 0, EndX: float64(i), EndY: 1, Pressure: 0.5,
+		}); err != nil {
+			t.Fatalf("create %s: %v", label, err)
+		}
+	}
+	bB, err := NewBatchStore(db).Create(&model.Batch{CaseRef: "B", Title: "TB"})
+	if err != nil {
+		t.Fatalf("create batch B: %v", err)
+	}
+	lB, err := ls.Create(&model.Layer{BatchID: bB, Name: "LB", Width: 10, Height: 10, IsBase: true})
+	if err != nil {
+		t.Fatalf("create layer B: %v", err)
+	}
+	if _, err := fs.Create(&model.Fragment{
+		BatchID: bB, LayerID: lB, Label: "B1",
+		StartX: 9, StartY: 0, EndX: 9, EndY: 1, Pressure: 0.5,
+	}); err != nil {
+		t.Fatalf("create B1: %v", err)
+	}
+
+	// 先取批次 A 的片段（仍持有），再取批次 B（更短）。
+	// 若共享底层数组，批次 A 的切片会被批次 B 的数据覆盖，尾部残留旧值。
+	aFrag, err := fs.ListByBatch(bA)
+	if err != nil {
+		t.Fatalf("list A: %v", err)
+	}
+	if len(aFrag) != 3 {
+		t.Fatalf("list A: got %d want 3", len(aFrag))
+	}
+	bFrag, err := fs.ListByBatch(bB)
+	if err != nil {
+		t.Fatalf("list B: %v", err)
+	}
+	if len(bFrag) != 1 {
+		t.Fatalf("list B: got %d want 1", len(bFrag))
+	}
+
+	// 批次 A 的结果不得被批次 B 的查询污染。
+	if len(aFrag) != 3 {
+		t.Fatalf("list A corrupted after list B: len=%d", len(aFrag))
+	}
+	want := []string{"A1", "A2", "A3"}
+	for i, f := range aFrag {
+		if f.Label != want[i] {
+			t.Errorf("list A[%d].Label = %q, want %q (串到批次 B 的数据)", i, f.Label, want[i])
+		}
+		if f.BatchID != bA {
+			t.Errorf("list A[%d].BatchID = %d, want %d", i, f.BatchID, bA)
+		}
+	}
+	if bFrag[0].Label != "B1" {
+		t.Errorf("list B[0].Label = %q, want B1", bFrag[0].Label)
+	}
+}
