@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"net/http"
 
 	"task275-inkorder/internal/service"
@@ -98,7 +97,7 @@ func (h *SnapshotHandler) transition(w http.ResponseWriter, r *http.Request, act
 	case "share":
 		sn, err = h.svc.Share(id)
 	case "freeze":
-		sn, err = h.svc.Freeze(context.Background(), id)
+		sn, err = h.svc.Freeze(r.Context(), id)
 	case "supersede":
 		sn, err = h.svc.Supersede(id)
 	}

@@ -134,8 +134,11 @@ func (s *SnapshotService) Share(snapshotID int64) (*model.Snapshot, error) {
 }
 
 // Freeze 冻结快照（shared → frozen），并把当时的标尺与偏序边写入 evidence_json。
+// ctx 关联研究者请求：若请求在冻结前被取消，事务不会提交，快照保持未冻结。
 func (s *SnapshotService) Freeze(ctx context.Context, snapshotID int64) (*model.Snapshot, error) {
-	_ = ctx
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	sn, err := s.app.Snapshots.Get(snapshotID)
 	if err != nil {
 		return nil, fmt.Errorf("load snapshot for freeze: %w", err)
@@ -147,7 +150,7 @@ func (s *SnapshotService) Freeze(ctx context.Context, snapshotID int64) (*model.
 	if err != nil {
 		return nil, err
 	}
-	if err := s.app.Snapshots.FreezeWithEvidence(context.Background(), snapshotID, evidence, rulerRef); err != nil {
+	if err := s.app.Snapshots.FreezeWithEvidence(ctx, snapshotID, evidence, rulerRef); err != nil {
 		return nil, fmt.Errorf("persist frozen snapshot: %w", err)
 	}
 	got, err := s.app.Snapshots.Get(snapshotID)

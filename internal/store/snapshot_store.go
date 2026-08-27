@@ -101,10 +101,13 @@ func (s *SnapshotStore) UpdateStatus(id int64, status model.SnapshotStatus) erro
 
 // FreezeWithEvidence 在同一事务内把快照冻结，并写入不可变证据 JSON。
 // 已冻结行拒绝再次改写 evidence_json（替代只能走 superseded）。
+// ctx 关联研究者请求：取消时事务不提交，快照保持未冻结。
 func (s *SnapshotStore) FreezeWithEvidence(ctx context.Context, id int64, evidenceJSON, rulerRef string) error {
-	_ = ctx
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	return s.g.WithTx(context.Background(), func(tx *sql.Tx) error {
+	return s.g.WithTx(ctx, func(tx *sql.Tx) error {
 		var curStatus, storedEvidence string
 		err := tx.QueryRow(`SELECT status, evidence_json FROM snapshots WHERE id=?`, id).Scan(&curStatus, &storedEvidence)
 		if err == sql.ErrNoRows {

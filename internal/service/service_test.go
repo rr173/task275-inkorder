@@ -142,3 +142,88 @@ func TestBatchTransitionGuards(t *testing.T) {
 		t.Error("rebuild without fragments should fail")
 	}
 }
+
+// TestFreezeRespectsCanceledContext 回归：研究者取消冻结请求时，快照不得变为冻结。
+// 修复前各层把请求 ctx 替换为 context.Background()，取消信号被丢弃，事务照常提交。
+func TestFreezeRespectsCanceledContext(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	app := NewApp(db)
+	ctx := context.Background()
+	batchSvc := NewBatchService(app)
+	fragSvc := NewFragmentService(app)
+	orderSvc := NewOrderService(app)
+	snapSvc := NewSnapshotService(app)
+
+	b, err := batchSvc.Create("CASE-X", "取消冻结", "")
+	if err != nil {
+		t.Fatalf("create batch: %v", err)
+	}
+	l1, err := fragSvc.AddLayer(b.ID, "L1", "a.tif", 1000, 800, true)
+	if err != nil {
+		t.Fatalf("add layer1: %v", err)
+	}
+	if _, err := fragSvc.AddFragment(b.ID, l1.ID, "A", 100, 100, 300, 100, 0.3); err != nil {
+		t.Fatalf("add A: %v", err)
+	}
+	if _, err := fragSvc.AddFragment(b.ID, l1.ID, "B", 200, 40, 200, 200, 0.62); err != nil {
+		t.Fatalf("add B: %v", err)
+	}
+	if _, err := fragSvc.CalibrateBatch(b.ID); err != nil {
+		t.Fatalf("calibrate: %v", err)
+	}
+	fragSvcAsFragment := func(label string) *model.Fragment {
+		fs, _ := app.Fragments.ListByBatch(b.ID)
+		for i := range fs {
+			if fs[i].Label == label {
+				return &fs[i]
+			}
+		}
+		t.Fatalf("fragment %s missing", label)
+		return nil
+	}
+	fa, fb := fragSvcAsFragment("A"), fragSvcAsFragment("B")
+	if _, err := orderSvc.AddCrossing(ctx, b.ID, l1.ID, fa.ID, fb.ID, 200, 100, 0.85, "B covers A"); err != nil {
+		t.Fatalf("add crossing: %v", err)
+	}
+	if _, err := batchSvc.Rebuild(ctx, b.ID); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	cand, err := orderSvc.RebuildCandidate(ctx, b.ID)
+	if err != nil {
+		t.Fatalf("rebuild candidate: %v", err)
+	}
+	if _, err := orderSvc.ConfirmCandidate(ctx, cand.ID); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if _, err := batchSvc.ToReview(ctx, b.ID); err != nil {
+		t.Fatalf("to review: %v", err)
+	}
+	sn, err := snapSvc.CreateDraft(ctx, b.ID, cand.ID, "取消冻结")
+	if err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+	if _, err := snapSvc.Share(sn.ID); err != nil {
+		t.Fatalf("share: %v", err)
+	}
+
+	// 研究者在提交前取消请求：用已取消的 ctx 发起冻结。
+	canceledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := snapSvc.Freeze(canceledCtx, sn.ID); err == nil {
+		t.Fatal("freeze with canceled context should fail, not silently freeze")
+	}
+	got, err := snapSvc.Get(sn.ID)
+	if err != nil {
+		t.Fatalf("reload snapshot: %v", err)
+	}
+	if got.Status == model.SnapFrozen {
+		t.Fatalf("snapshot must NOT be frozen after canceled request; got %s", got.Status)
+	}
+	if got.EvidenceJSON != "" {
+		t.Fatalf("canceled freeze must not write evidence; got %q", got.EvidenceJSON)
+	}
+}
