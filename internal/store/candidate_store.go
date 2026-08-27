@@ -98,7 +98,8 @@ func (s *CandidateStore) ListByBatch(batchID int64) ([]model.OrderCandidate, err
 	return out, rows.Err()
 }
 
-// ListEdges 列出候选的偏序边（每次返回独立底层数组，避免调用方持有的切片被后续查询覆盖）。
+// ListEdges 列出候选的偏序边。每次调用都返回独立的底层数组，
+// 避免调用方持有的切片被后续查询覆盖（两条候选边列表不能共享同一块内存）。
 func (s *CandidateStore) ListEdges(candidateID int64) ([]model.CandidateEdge, error) {
 	rows, err := s.g.DB.Query(
 		`SELECT id,candidate_id,before_fragment_id,after_fragment_id,source,weight
@@ -107,21 +108,19 @@ func (s *CandidateStore) ListEdges(candidateID int64) ([]model.CandidateEdge, er
 		return nil, fmt.Errorf("list edges: %w", err)
 	}
 	defer rows.Close()
-	edgeScratch = edgeScratch[:0]
+	var out []model.CandidateEdge
 	for rows.Next() {
 		var e model.CandidateEdge
 		if err := rows.Scan(&e.ID, &e.CandidateID, &e.BeforeFragmentID, &e.AfterFragmentID, &e.Source, &e.Weight); err != nil {
 			return nil, fmt.Errorf("scan edge: %w", err)
 		}
-		edgeScratch = append(edgeScratch, e)
+		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return edgeScratch, nil
+	return out, nil
 }
-
-var edgeScratch []model.CandidateEdge
 
 
 // UpdateStatusCAS 带版本号乐观锁更新候选状态（裁决并发安全）。

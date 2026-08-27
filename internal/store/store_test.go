@@ -66,6 +66,53 @@ func TestPersistAndRecover(t *testing.T) {
 }
 
 // TestCandidateCAS 验证乐观锁裁决。
+// TestListEdgesIndependentArray 验证两条候选的边列表互不覆盖底层数组。
+// 回归：ListEdges 曾复用包级 edgeScratch，先取的边列表会被后一次查询覆盖。
+func TestListEdgesIndependentArray(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+
+	bs := NewBatchStore(db)
+	bID, _ := bs.Create(&model.Batch{CaseRef: "C", Title: "T"})
+	cs := NewCandidateStore(NewWriteGuard(db))
+
+	mkEdges := func(b, a int64) []model.CandidateEdge {
+		return []model.CandidateEdge{
+			{CandidateID: 0, BeforeFragmentID: b, AfterFragmentID: a, Source: model.EdgeManual, Weight: 1},
+		}
+	}
+	c1, err := cs.Create(context.Background(), &model.OrderCandidate{BatchID: bID, Status: model.CandConsistent, Score: 0.9}, mkEdges(10, 11))
+	if err != nil {
+		t.Fatalf("create c1: %v", err)
+	}
+	c2, err := cs.Create(context.Background(), &model.OrderCandidate{BatchID: bID, Status: model.CandConsistent, Score: 0.5}, mkEdges(20, 21))
+	if err != nil {
+		t.Fatalf("create c2: %v", err)
+	}
+
+	first, err := cs.ListEdges(c1)
+	if err != nil {
+		t.Fatalf("list edges c1: %v", err)
+	}
+	second, err := cs.ListEdges(c2)
+	if err != nil {
+		t.Fatalf("list edges c2: %v", err)
+	}
+
+	if len(first) != 1 || len(second) != 1 {
+		t.Fatalf("edge counts: first=%d second=%d", len(first), len(second))
+	}
+	if got := first[0].BeforeFragmentID; got != 10 {
+		t.Errorf("c1 before overwritten by c2: got %d want 10", got)
+	}
+	if got := second[0].BeforeFragmentID; got != 20 {
+		t.Errorf("c2 before mismatch: got %d want 20", got)
+	}
+}
+
 func TestCandidateCAS(t *testing.T) {
 	db, err := Open(":memory:")
 	if err != nil {
