@@ -142,3 +142,71 @@ func TestBatchTransitionGuards(t *testing.T) {
 		t.Error("rebuild without fragments should fail")
 	}
 }
+
+// TestAutoCrossMissingFragment 验证对不存在的片段做自动交叉判定时返回明确的
+// 领域错误而非 panic，且不会误创建交叉证据。
+func TestAutoCrossMissingFragment(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	app := NewApp(db)
+	batchSvc := NewBatchService(app)
+	fragSvc := NewFragmentService(app)
+	orderSvc := NewOrderService(app)
+
+	ctx := context.Background()
+	b, err := batchSvc.Create("CASE-M", "缺失片段自检", "")
+	if err != nil {
+		t.Fatalf("create batch: %v", err)
+	}
+	l1, err := fragSvc.AddLayer(b.ID, "L1", "a.tif", 1000, 800, true)
+	if err != nil {
+		t.Fatalf("add layer: %v", err)
+	}
+	f1, err := fragSvc.AddFragment(b.ID, l1.ID, "A", 100, 100, 300, 100, 0.3)
+	if err != nil {
+		t.Fatalf("add A: %v", err)
+	}
+	if _, err := fragSvc.CalibrateBatch(b.ID); err != nil {
+		t.Fatalf("calibrate: %v", err)
+	}
+
+	const ghostID int64 = 9999
+	// 第二个片段不存在：应返回 NOT_FOUND，不 panic、不误建交叉
+	_, err = orderSvc.AutoCross(ctx, b.ID, l1.ID, f1.ID, ghostID)
+	if err == nil {
+		t.Fatal("auto cross with missing fragment should fail, got nil")
+	}
+	if ae := model.AsAppError(err); ae == nil || ae.Code != model.ErrCodeNotFound {
+		t.Fatalf("auto cross with missing fragment should surface NOT_FOUND, got %v", err)
+	}
+
+	// 反过来：第一个片段不存在
+	_, err = orderSvc.AutoCross(ctx, b.ID, l1.ID, ghostID, f1.ID)
+	if err == nil {
+		t.Fatal("auto cross with missing first fragment should fail, got nil")
+	}
+	if ae := model.AsAppError(err); ae == nil || ae.Code != model.ErrCodeNotFound {
+		t.Fatalf("auto cross with missing first fragment should surface NOT_FOUND, got %v", err)
+	}
+
+	// 两侧都不存在
+	_, err = orderSvc.AutoCross(ctx, b.ID, l1.ID, ghostID, ghostID+1)
+	if err == nil {
+		t.Fatal("auto cross with both fragments missing should fail, got nil")
+	}
+	if ae := model.AsAppError(err); ae == nil || ae.Code != model.ErrCodeNotFound {
+		t.Fatalf("auto cross with both fragments missing should surface NOT_FOUND, got %v", err)
+	}
+
+	// 确保失败未误创建任何交叉证据
+	cs, err := app.Crossings.ListByBatch(b.ID)
+	if err != nil {
+		t.Fatalf("list crossings: %v", err)
+	}
+	if len(cs) != 0 {
+		t.Fatalf("no crossing should have been created, got %d", len(cs))
+	}
+}

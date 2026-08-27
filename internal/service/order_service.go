@@ -60,9 +60,21 @@ func (s *OrderService) AutoCross(ctx context.Context, batchID, layerID, firstID,
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	f1, _ := s.app.Fragments.Get(firstID)
-	f2, _ := s.app.Fragments.Get(secondID)
-	if f1 != nil && f2 != nil && (f1.Status == model.FragmentRaw || f2.Status == model.FragmentRaw) {
+	f1, err := s.app.Fragments.Get(firstID)
+	if err != nil {
+		return nil, fmt.Errorf("load first fragment: %w", err)
+	}
+	f2, err := s.app.Fragments.Get(secondID)
+	if err != nil {
+		return nil, fmt.Errorf("load second fragment: %w", err)
+	}
+	if f1.BatchID != batchID || f2.BatchID != batchID {
+		return nil, model.NewError(model.ErrCodeConflict, "片段不属于该批次")
+	}
+	if firstID == secondID {
+		return nil, model.NewError(model.ErrCodeInvalid, "交叉证据的两端不能是同一片段")
+	}
+	if f1.Status == model.FragmentRaw || f2.Status == model.FragmentRaw {
 		return nil, model.NewError(model.ErrCodeBadState, "片段尚未校正，无法做交叉判定")
 	}
 	judge := geometry.NewCrossJudge()

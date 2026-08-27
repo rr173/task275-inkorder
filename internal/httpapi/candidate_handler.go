@@ -69,7 +69,7 @@ func (h *CandidateHandler) AutoCross(w http.ResponseWriter, r *http.Request) {
 	}
 	c, err := h.svc.AutoCross(context.Background(), id, req.LayerID, req.FirstID, req.SecondID)
 	if err != nil {
-		writeJSON(w, http.StatusCreated, map[string]string{"status": "ok"})
+		writeError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, c)
