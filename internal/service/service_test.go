@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"task275-inkorder/internal/model"
@@ -140,5 +141,54 @@ func TestBatchTransitionGuards(t *testing.T) {
 	// 无片段时不能进入待重建
 	if _, err := batchSvc.Rebuild(context.Background(), b.ID); err == nil {
 		t.Error("rebuild without fragments should fail")
+	}
+}
+
+// TestAdjudicateConcurrentConfirmReject 验证两名研究者并发确认/否决同一候选时
+// 至多一方成功（回归：系统有时让两次裁决都显示成功）。
+func TestAdjudicateConcurrentConfirmReject(t *testing.T) {
+	for iter := 0; iter < 100; iter++ {
+		db, err := store.Open(":memory:")
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		app := NewApp(db)
+		ctx := context.Background()
+		bID, _ := app.Batches.Create(&model.Batch{CaseRef: "C", Title: "T"})
+		cID, err := app.Candidates.Create(ctx, &model.OrderCandidate{BatchID: bID, Status: model.CandConsistent, Score: 0.9}, nil)
+		if err != nil {
+			t.Fatalf("create candidate: %v", err)
+		}
+		ord := NewOrderService(app)
+
+		type res struct{ ok bool }
+		rr := make([]res, 2)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		for i := 0; i < 2; i++ {
+			i := i
+			go func() {
+				defer wg.Done()
+				var err error
+				if i == 0 {
+					_, err = ord.ConfirmCandidate(ctx, cID)
+				} else {
+					_, err = ord.RejectCandidate(ctx, cID)
+				}
+				if err == nil {
+					rr[i].ok = true
+				}
+			}()
+		}
+		wg.Wait()
+		if rr[0].ok && rr[1].ok {
+			t.Fatalf("iter %d: both confirm and reject succeeded", iter)
+		}
+		// 最终状态应为二者之一，版本恰好推进一次（恰一次成功）或零次（两者都冲突）。
+		final, _ := app.Candidates.Get(cID)
+		if final.Status != model.CandConfirmed && final.Status != model.CandRejected && final.Status != model.CandConsistent {
+			t.Fatalf("iter %d: unexpected final status %s", iter, final.Status)
+		}
+		db.Close()
 	}
 }

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"task275-inkorder/internal/model"
@@ -95,5 +96,109 @@ func TestCandidateCAS(t *testing.T) {
 	c, _ := cs.Get(cID)
 	if c.Status != model.CandConfirmed {
 		t.Errorf("status = %s", c.Status)
+	}
+}
+
+// TestCandidateEdgesNoCrosstalk 验证 ListEdges 按 candidate_id 返回各自边，
+// 不被其他候选的写入串扰（回归：edgeView 共享缓存导致边串到别的写入结果上）。
+func TestCandidateEdgesNoCrosstalk(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+
+	bs := NewBatchStore(db)
+	bID, _ := bs.Create(&model.Batch{CaseRef: "C", Title: "T"})
+	cs := NewCandidateStore(NewWriteGuard(db))
+
+	// 候选 1 的边：1→2
+	cID1, err := cs.Create(context.Background(),
+		&model.OrderCandidate{BatchID: bID, Status: model.CandConsistent, Score: 0.9},
+		[]model.CandidateEdge{{BeforeFragmentID: 1, AfterFragmentID: 2, Source: model.EdgeFromCrossing, Weight: 0.8}})
+	if err != nil {
+		t.Fatalf("create candidate1: %v", err)
+	}
+	// 候选 2 的边：3→4
+	cID2, err := cs.Create(context.Background(),
+		&model.OrderCandidate{BatchID: bID, Status: model.CandConsistent, Score: 0.5},
+		[]model.CandidateEdge{{BeforeFragmentID: 3, AfterFragmentID: 4, Source: model.EdgeManual, Weight: 0.1}})
+	if err != nil {
+		t.Fatalf("create candidate2: %v", err)
+	}
+
+	// 再创建候选 2 之后，查候选 1 的边仍应是 1→2（而非候选 2 的 3→4）。
+	e1, err := cs.ListEdges(cID1)
+	if err != nil {
+		t.Fatalf("list edges1: %v", err)
+	}
+	if len(e1) != 1 || e1[0].BeforeFragmentID != 1 || e1[0].AfterFragmentID != 2 {
+		t.Errorf("candidate1 edges crosstalked: %+v", e1)
+	}
+
+	e2, err := cs.ListEdges(cID2)
+	if err != nil {
+		t.Fatalf("list edges2: %v", err)
+	}
+	if len(e2) != 1 || e2[0].BeforeFragmentID != 3 || e2[0].AfterFragmentID != 4 {
+		t.Errorf("candidate2 edges crosstalked: %+v", e2)
+	}
+
+	// 两次返回的切片应互不影响（独立底层数组）。
+	e1again, _ := cs.ListEdges(cID1)
+	e2again, _ := cs.ListEdges(cID2)
+	if &e1again[:1][0] == &e2again[:1][0] {
+		t.Error("ListEdges returned shared backing array")
+	}
+}
+
+// TestCandidateCASConcurrentConfirmReject 验证并发确认/否决同一候选时，
+// 至多一方成功（回归：读 v1 的裁决与读 v2 的裁决各自 CAS 命中，导致两次裁决都成功）。
+func TestCandidateCASConcurrentConfirmReject(t *testing.T) {
+	for iter := 0; iter < 200; iter++ {
+		db, err := Open(":memory:")
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		bs := NewBatchStore(db)
+		bID, _ := bs.Create(&model.Batch{CaseRef: "C", Title: "T"})
+		cs := NewCandidateStore(NewWriteGuard(db))
+		cID, err := cs.Create(context.Background(),
+			&model.OrderCandidate{BatchID: bID, Status: model.CandConsistent, Score: 0.9}, nil)
+		if err != nil {
+			t.Fatalf("create candidate: %v", err)
+		}
+
+		type res struct {
+			ok bool
+		}
+		results := make([]res, 2)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		for i := 0; i < 2; i++ {
+			i := i
+			go func() {
+				defer wg.Done()
+				var to model.CandidateStatus
+				if i == 0 {
+					to = model.CandConfirmed
+				} else {
+					to = model.CandRejected
+				}
+				c, err := cs.Get(cID)
+				if err != nil {
+					return
+				}
+				ok, err := cs.UpdateStatusCAS(context.Background(), cID, c.Version, to)
+				if err == nil {
+					results[i].ok = ok
+				}
+			}()
+		}
+		wg.Wait()
+		if results[0].ok && results[1].ok {
+			t.Fatalf("iter %d: both confirm and reject succeeded (lost update)", iter)
+		}
+		db.Close()
 	}
 }

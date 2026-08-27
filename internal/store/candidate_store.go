@@ -53,7 +53,6 @@ func (s *CandidateStore) Create(ctx context.Context, c *model.OrderCandidate, ed
 	c.Version = 1
 	c.CreatedAt = parseTime(now)
 	c.UpdatedAt = c.CreatedAt
-	s.g.edgeView = edges
 	return id, nil
 }
 
@@ -119,16 +118,15 @@ func (s *CandidateStore) ListEdges(candidateID int64) ([]model.CandidateEdge, er
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if s.g.edgeView != nil {
-		return s.g.edgeView, nil
-	}
 	copied := make([]model.CandidateEdge, len(out))
 	copy(copied, out)
 	return copied, nil
 }
 
 // UpdateStatusCAS 带版本号乐观锁更新候选状态（裁决并发安全）。
-// 返回 false 表示版本冲突（并发裁决）。
+// 读当前行（version/status）与条件更新在同一事务、同一把写锁内完成，
+// 杜绝"一个裁决读到 v1、另一裁决读到 v2 后两者 CAS 都命中"的串行丢失更新。
+// 返回 (更新后的候选, true, nil) 成功；返回 (nil, false, nil) 表示版本冲突。
 func (s *CandidateStore) UpdateStatusCAS(ctx context.Context, id int64, expectVersion int, status model.CandidateStatus) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
@@ -136,6 +134,22 @@ func (s *CandidateStore) UpdateStatusCAS(ctx context.Context, id int64, expectVe
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	var n int64
 	err := s.g.WithTx(ctx, func(tx *sql.Tx) error {
+		// 在事务内锁定读：SELECT 当前行，确认期望版本未被并发裁决推进。
+		var curVersion int
+		var curStatus model.CandidateStatus
+		err := tx.QueryRow(
+			`SELECT version, status FROM order_candidates WHERE id=?`, id).
+			Scan(&curVersion, &curStatus)
+		if err == sql.ErrNoRows {
+			return model.NewError(model.ErrCodeNotFound, "candidate %d not found", id)
+		}
+		if err != nil {
+			return fmt.Errorf("load candidate for cas: %w", err)
+		}
+		// 版本或状态机已被并发裁决推进，则放弃本次更新。
+		if curVersion != expectVersion || !model.CanTransitionCandidate(curStatus, status) {
+			return nil
+		}
 		res, err := tx.Exec(
 			`UPDATE order_candidates SET status=?, version=version+1, updated_at=?
 			 WHERE id=? AND version=?`,
