@@ -110,6 +110,7 @@ func (s *FragmentStore) UpdateCalibration(id int64, sx, sy, ex, ey float64) erro
 	if n, _ := res.RowsAffected(); n == 0 {
 		return model.NewError(model.ErrCodeNotFound, "fragment %d not found", id)
 	}
+	s.invalidateCache(id)
 	return nil
 }
 
@@ -122,7 +123,21 @@ func (s *FragmentStore) UpdateStatus(id int64, status model.FragmentStatus) erro
 	if n, _ := res.RowsAffected(); n == 0 {
 		return model.NewError(model.ErrCodeNotFound, "fragment %d not found", id)
 	}
+	s.invalidateCache(id)
 	return nil
+}
+
+// invalidateCache 使受影响批次在 ListByBatch 缓存中的条目失效。
+// 片段的 batch_id 不会变，故按 id 反查所属批次后删除其缓存项。
+func (s *FragmentStore) invalidateCache(id int64) {
+	if s.cache == nil {
+		return
+	}
+	var batchID int64
+	if err := s.db.QueryRow(`SELECT batch_id FROM fragments WHERE id=?`, id).Scan(&batchID); err != nil {
+		return
+	}
+	delete(s.cache, batchID)
 }
 
 func scanFragments(rows *sql.Rows) ([]model.Fragment, error) {
